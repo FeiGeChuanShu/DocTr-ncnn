@@ -4,7 +4,7 @@ ncnn demo of **DocTr: Document Image Transformer for Geometric Unwarping and Ill
 ## model support:  
 ### 1.Document Segmentation  
 ### 2.Geometric Unwarping  
-All models are available in [Baidu Pan](https://pan.baidu.com/s/1zbVwK7kh6uVfWgq9AZDJDA) (i4xb) 
+All models are available in [Baidu Pan](https://pan.baidu.com/s/1lny5IuL9TMUlfAUCg_6iuw) (69c4) 
 
 ### TODO:  
 1.Illumination Correction model  
