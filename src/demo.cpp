@@ -570,7 +570,6 @@ ncnn::Mat geo(const ncnn::Mat& seg_out,const cv::Mat& img)
     fbnet_net.load_model("./models/fbnet.bin");
 
     ncnn::Net encoder_net;
-    encoder_net.opt.use_packing_layout = false;//there is some bug in packing layout
     encoder_net.load_param("./models/encoder.param");
     encoder_net.load_model("./models/encoder.bin");
 
