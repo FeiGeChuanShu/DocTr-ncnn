@@ -560,10 +560,10 @@ ncnn::Mat geo(const ncnn::Mat& seg_out,const cv::Mat& img)
     coords_grid(36, 36, coords0);
     coords_grid(36, 36, coords1);
 
-    ncnn::Net decorer_net;
-    decorer_net.opt.use_packing_layout = false;//there is some bug in packing layout
-    decorer_net.load_param("./models/decoder.param");
-    decorer_net.load_model("./models/decoder.bin");
+    ncnn::Net decoder_net;
+    decoder_net.opt.use_packing_layout = false;//there is some bug in packing layout
+    decoder_net.load_param("./models/decoder.param");
+    decoder_net.load_model("./models/decoder.bin");
 
     ncnn::Net fbnet_net;
     fbnet_net.load_param("./models/fbnet.param");
@@ -595,7 +595,7 @@ ncnn::Mat geo(const ncnn::Mat& seg_out,const cv::Mat& img)
     ncnn::Mat fmap2;
     ex2.extract("out", fmap2);
     //decoder
-    ncnn::Extractor ex3 = decorer_net.create_extractor();
+    ncnn::Extractor ex3 = decoder_net.create_extractor();
     ex3.input("imgf", fmap2);
     ex3.input("pos", posf);
 
