@@ -672,6 +672,224 @@ ncnn::Mat geo(const ncnn::Mat& seg_out,const cv::Mat& img)
     return lbl;
 }
 
+int preprocess(const cv::Mat& img, cv::Mat& pad_img, int& img_pad_h, int& img_pad_w)
+{
+    if (img.cols % 2 != 0)
+    {
+        img_pad_w = (2 - img.cols % 2);
+    }
+    if (img.rows % 2 != 0)
+    {
+        img_pad_h = (2 - img.rows % 2);
+    }
+    cv::copyMakeBorder(img, pad_img, 0, img_pad_h, 0, img_pad_w, cv::BORDER_CONSTANT, cv::Scalar(0));
+
+    return 0;
+}
+static ncnn::Mat depatch_embed(const ncnn::Mat& x)
+{
+    int num_patches = 1024;
+    ncnn::Mat out(128, 128, 16);
+    int p = 4;
+    int i = 0, j = 0;
+    for (int k = 0; k < num_patches; k++)//1,1024,256
+    {
+        if (i + p > out.w)
+        {
+            i = 0;
+            j += p;
+        }
+        ncnn::Mat temp = ncnn::Mat(256, (void*)x.row(k)).reshape(p, p, out.c);//16,4,4=256
+
+        for (int c = 0; c < 16; c++)//16
+        {
+            float* outptr = out.channel(c);
+            float* ptr = temp.channel(c);
+            for (int h = i; h < i + p; h++)//4
+            {
+                for (int w = j; w < j + p; w++)//4
+                {
+                    outptr[h * out.w + w] = *ptr;
+                    ptr++;
+                }
+            }
+        }
+        i += p;
+    }
+
+    return out;
+}
+static ncnn::Mat patch_embed(const ncnn::Mat& x)
+{
+    ncnn::Mat out(256, 1024/*, 1*/);
+
+    int p = 4;
+    int i = 0, j = 0;
+    for (int k = 0; k < 1024; k++)
+    {
+        if (i + p > x.w)
+        {
+            i = 0;
+            j += p;
+        }
+        float* ptr = out/*.channel(0)*/.row(k);
+        for (int c = 0; c < 16; c++)//16
+        {
+            for (int h = i; h < i + p; h++)//4
+            {
+                for (int w = j; w < j + p; w++)//4
+                {
+                    *ptr = x.channel(c)[h * x.w + w];
+                    ptr++;
+                }
+            }
+
+        }
+        i += p;
+    }
+
+    return out;
+}
+static void to_ocv(const ncnn::Mat& result, cv::Mat& out, int img_h, int img_w)
+{
+    cv::Mat cv_result_32F = cv::Mat::zeros(cv::Size(result.w, result.h), CV_32FC3);
+    for (int i = 0; i < result.h; i++)
+    {
+        for (int j = 0; j < result.w; j++)
+        {
+            cv_result_32F.at<cv::Vec3f>(i, j)[2] = result.channel(0)[i * result.w + j];
+            cv_result_32F.at<cv::Vec3f>(i, j)[1] = result.channel(1)[i * result.w + j];
+            cv_result_32F.at<cv::Vec3f>(i, j)[0] = result.channel(2)[i * result.w + j];
+        }
+    }
+
+    cv::Mat cv_result_8U;
+    cv_result_32F.convertTo(cv_result_8U, CV_8UC3, 255.0, 0);
+    cv::resize(cv_result_8U, out, cv::Size(img_w, img_h), 0, 0, cv::INTER_LANCZOS4);
+    //cv_result_8U.copyTo(out);
+
+}
+int ill_inference(const ncnn::Net & head_net, const ncnn::Net & encoder_net, const ncnn::Net & decoder_net,
+    const cv::Mat & img, cv::Mat & ill_result, int img_h, int img_w)
+{
+    cv::Mat img1 = img.clone();
+    ncnn::Mat in = ncnn::Mat::from_pixels_resize(img1.data, ncnn::Mat::PIXEL_BGR2RGB, img1.cols, img1.rows, 128, 128);
+    const float norm_vals1[3] = { 1 / 255.f, 1 / 255.f, 1 / 255.f };
+    in.substract_mean_normalize(0, norm_vals1);
+
+    ncnn::Extractor ex0 = head_net.create_extractor();
+    ex0.input("ill_head_in", in);
+    ncnn::Mat head_out;
+    ex0.extract("ill_head_out", head_out);
+
+    ncnn::Mat patch_embed_out = patch_embed(head_out);
+
+    ex0.input("pos_embed_in", patch_embed_out);
+    ncnn::Mat pos_embed_out;
+    ex0.extract("pos_embed_out", pos_embed_out);
+
+    ncnn::Extractor ex1 = encoder_net.create_extractor();
+
+    ex1.input("0", pos_embed_out);
+    ncnn::Mat encoder_out;
+    ex1.extract("722", encoder_out);
+
+    ncnn::Extractor ex2 = decoder_net.create_extractor();
+    ex2.input("ill_decoder_in", encoder_out);
+    ncnn::Mat decoder_out;
+    ex2.extract("ill_decoder_out", decoder_out);
+
+    ncnn::Mat depatch_embed_out = depatch_embed(decoder_out);
+
+    ncnn::Mat out;
+    ex2.input("ill_tail_in", depatch_embed_out);
+    ex2.extract("ill_tail_out", out);
+
+    //cv::Mat ill_result;
+    to_ocv(out, ill_result, img_h, img_w);
+
+    return 0;
+}
+
+int tile_process(const cv::Mat & inimage, cv::Mat & outimage)
+{
+    ncnn::Net head_net;
+    head_net.load_param("./models/ill_head.param");
+    head_net.load_model("./models/ill_head.bin");
+
+    ncnn::Net encoder_net;
+    encoder_net.opt.use_packing_layout = false;
+    encoder_net.load_param("./models/ill_encoder.param");
+    encoder_net.load_model("./models/ill_encoder.bin");
+
+    ncnn::Net decoder_net;
+    decoder_net.opt.use_packing_layout = false;
+    decoder_net.load_param("./models/ill_decoder.param");
+    decoder_net.load_model("./models/ill_decoder.bin");
+
+    const int tile_size = 256;
+    const int tile_pad = 10;
+    const int scale = 1;
+    cv::Mat pad_inimage;
+    int img_pad_w = 0, img_pad_h = 0;
+    preprocess(inimage, pad_inimage, img_pad_w, img_pad_h);
+
+    int tiles_x = std::ceil((float)inimage.cols / tile_size);
+    int tiles_y = std::ceil((float)inimage.rows / tile_size);
+
+    cv::Mat out = cv::Mat(cv::Size(pad_inimage.cols, pad_inimage.rows), CV_8UC3);
+    std::vector<cv::Mat> tile_imgs;
+    int num_threads = ncnn::get_cpu_count();
+    #pragma omp parallel for num_threads(num_threads)
+    for (int i = 0; i < tiles_y; i++)
+    {
+        for (int j = 0; j < tiles_x; j++)
+        {
+            int ofs_x = j * tile_size;
+            int ofs_y = i * tile_size;
+
+            int input_start_x = ofs_x;
+            int input_end_x = std::min(ofs_x + tile_size, pad_inimage.cols);
+            int input_start_y = ofs_y;
+            int input_end_y = std::min(ofs_y + tile_size, pad_inimage.rows);
+
+            int input_start_x_pad = std::max(input_start_x - tile_pad, 0);
+            int input_end_x_pad = std::min(input_end_x + tile_pad, pad_inimage.cols);
+            int input_start_y_pad = std::max(input_start_y - tile_pad, 0);
+            int input_end_y_pad = std::min(input_end_y + tile_pad, pad_inimage.rows);
+
+            int input_tile_width = input_end_x - input_start_x;
+            int input_tile_height = input_end_y - input_start_y;
+
+            cv::Mat input_tile = pad_inimage(cv::Rect(input_start_x_pad, input_start_y_pad, input_end_x_pad - input_start_x_pad, input_end_y_pad - input_start_y_pad)).clone();
+        
+            cv::Mat out_tile;
+            ill_inference(head_net, encoder_net, decoder_net, input_tile, out_tile, input_tile.rows, input_tile.cols);
+            //to mat
+
+            int output_start_x = input_start_x * scale;
+            int output_end_x = input_end_x * scale;
+            int output_start_y = input_start_y * scale;
+            int output_end_y = input_end_y * scale;
+
+            int output_start_x_tile = (input_start_x - input_start_x_pad) * scale;
+            int output_end_x_tile = output_start_x_tile + input_tile_width * scale;
+            int output_start_y_tile = (input_start_y - input_start_y_pad) * scale;
+            int output_end_y_tile = output_start_y_tile + input_tile_height * scale;
+            cv::Rect tile_roi = cv::Rect(output_start_x_tile, output_start_y_tile,
+                output_end_x_tile - output_start_x_tile,
+                output_end_y_tile - output_start_y_tile);
+            cv::Rect out_roi = cv::Rect(output_start_x, output_start_y,
+                output_end_x - output_start_x, output_end_y - output_start_y);
+            out_tile(tile_roi).copyTo(out(out_roi));
+        }
+    }
+
+    out(cv::Rect(0, 0, inimage.cols, inimage.rows)).copyTo(outimage);
+    return 0;
+
+}
+
 int main(int argc, char** argv)
 {
     if (argc != 2)
@@ -692,8 +910,12 @@ int main(int argc, char** argv)
     ncnn::Mat seg_out = seg(img);
     ncnn::Mat lbl = geo(seg_out, img);
     cv::Mat warp_result = warp_image(lbl, img);
-    
     cv::imwrite("warp_result.jpg", warp_result);
+    
+    cv::Mat ill_result;
+    tile_process(warp_result, ill_result);
+    cv::imwrite("ill_result.jpg", ill_result);
+    
     //cv::imshow("warp_result", warp_result);
     //cv::waitKey();
     
